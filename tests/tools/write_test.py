@@ -1,0 +1,128 @@
+"""Tests for the EMR write tool safeguards (no real API calls)."""
+
+import os
+import unittest
+from unittest import mock
+
+from fastmcp.exceptions import ToolError
+from google.ads.googleads.client import GoogleAdsClient
+
+from ads_mcp.tools import write
+
+MCC = "6410607198"
+CLIENT = "6426443333"
+
+
+def _real_client():
+    return GoogleAdsClient(credentials=mock.Mock(), use_proto_plus=True)
+
+
+class WriteToolTest(unittest.TestCase):
+    def setUp(self):
+        os.environ["GOOGLE_ADS_LOGIN_CUSTOMER_ID"] = MCC
+        os.environ["EMR_MAX_DAILY_BUDGET_EUR"] = "100"
+        os.environ["EMR_MAX_BUDGET_INCREASE_PCT"] = "50"
+        os.environ.pop("GOOGLE_ADS_MCP_STORAGE_FIRESTORE_PROJECT", None)
+        self.client = _real_client()
+        self.ga = mock.Mock()
+        self.ga.search_stream.return_value = [mock.Mock(results=[mock.Mock()])]
+        self.ga.mutate.return_value = mock.Mock(mutate_operation_responses=[])
+        patches = [
+            mock.patch.object(write.utils, "get_googleads_client", return_value=self.client),
+            mock.patch.object(write.utils, "get_googleads_service", return_value=self.ga),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _negative_kw(self):
+        return [{"campaign_criterion_operation": {"create": {
+            "campaign": f"customers/{CLIENT}/campaigns/1",
+            "negative": True,
+            "keyword": {"text": "fliesen reinigen", "match_type": "PHRASE"}}}}]
+
+    def test_dry_run_returns_token_and_validates_only(self):
+        res = write.mutate(CLIENT, self._negative_kw())
+        self.assertTrue(res["probelauf"])
+        self.assertIn("confirmation_token", res)
+        self.assertTrue(self.ga.mutate.call_args.kwargs["request"].validate_only)
+
+    def test_real_run_needs_token(self):
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, self._negative_kw(), validate_only=False)
+        self.ga.mutate.assert_not_called()
+
+    def test_real_run_with_matching_token(self):
+        token = write.mutate(CLIENT, self._negative_kw())["confirmation_token"]
+        res = write.mutate(CLIENT, self._negative_kw(), validate_only=False, confirmation_token=token)
+        self.assertTrue(res["ausgefuehrt"])
+        self.assertFalse(self.ga.mutate.call_args.kwargs["request"].validate_only)
+
+    def test_token_does_not_fit_other_operations(self):
+        token = write.mutate(CLIENT, self._negative_kw())["confirmation_token"]
+        other = self._negative_kw()
+        other[0]["campaign_criterion_operation"]["create"]["keyword"]["text"] = "etwas anderes"
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, other, validate_only=False, confirmation_token=token)
+
+    def test_mcc_itself_is_blocked(self):
+        with self.assertRaises(ToolError):
+            write.mutate(MCC, self._negative_kw())
+
+    def test_account_outside_mcc_is_blocked(self):
+        self.ga.search_stream.return_value = [mock.Mock(results=[])]
+        with self.assertRaises(ToolError):
+            write.mutate("4347121950", self._negative_kw())
+
+    def test_blocked_operation_types(self):
+        ops = [{"customer_user_access_operation": {"remove": f"customers/{CLIENT}/customerUserAccesses/1"}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+        ops = [{"conversion_action_operation": {"remove": f"customers/{CLIENT}/conversionActions/1"}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+    def test_new_campaign_forced_paused(self):
+        ops = [{"campaign_operation": {"create": {
+            "name": "Test", "status": "ENABLED", "advertising_channel_type": "SEARCH",
+            "campaign_budget": f"customers/{CLIENT}/campaignBudgets/-1"}}}]
+        res = write.mutate(CLIENT, ops)
+        sent = self.ga.mutate.call_args.kwargs["request"].mutate_operations[0]
+        self.assertEqual(sent.campaign_operation.create.status.name, "PAUSED")
+        self.assertTrue(res["hinweise"])
+
+    def test_enabling_campaign_blocked(self):
+        ops = [{"campaign_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaigns/1", "status": "ENABLED"},
+            "update_mask": "status"}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+    def test_pausing_campaign_allowed(self):
+        ops = [{"campaign_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaigns/1", "status": "PAUSED"},
+            "update_mask": "status"}}]
+        self.assertTrue(write.mutate(CLIENT, ops)["gueltig"])
+
+    def test_budget_cap(self):
+        ops = [{"campaign_budget_operation": {"create": {
+            "name": "B", "amount_micros": "150000000", "delivery_method": "STANDARD"}}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+    def test_budget_increase_limit(self):
+        current_row = mock.Mock()
+        current_row.campaign_budget.amount_micros = 20_000_000
+        self.ga.search_stream.side_effect = [
+            [mock.Mock(results=[mock.Mock()])],
+            [mock.Mock(results=[current_row])],
+        ]
+        ops = [{"campaign_budget_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaignBudgets/1", "amount_micros": "40000000"},
+            "update_mask": "amount_micros"}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+
+if __name__ == "__main__":
+    unittest.main()
