@@ -209,11 +209,18 @@ def _ad_group_running(customer_id: str, ad_group_rn: str, new_ad_groups: Dict[st
 
 
 def _has_primary_conversion(customer_id: str) -> bool:
+    try:
+        return _primary_conversion_row(customer_id) is not None
+    except GoogleAdsException as ex:
+        raise ToolError("Conversion-Prüfung fehlgeschlagen, Aktivierung abgelehnt.\n" + _format_ads_error(ex))
+
+
+def _primary_conversion_row(customer_id: str):
     row = _query_one(customer_id,
         "SELECT conversion_action.id FROM conversion_action "
         "WHERE conversion_action.status = 'ENABLED' AND conversion_action.primary_for_goal = TRUE "
         "LIMIT 1")
-    return row is not None
+    return row
 
 
 _LIVE_STATUSES = ("ENABLED", "UNSPECIFIED")
