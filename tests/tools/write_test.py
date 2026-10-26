@@ -124,5 +124,44 @@ class WriteToolTest(unittest.TestCase):
             write.mutate(CLIENT, ops)
 
 
+    def test_shared_negative_list_operations(self):
+        ops = [
+            {"shared_set_operation": {"create": {
+                "resource_name": f"customers/{CLIENT}/sharedSets/-1",
+                "name": "EMR Ausschluss DIY", "type": "NEGATIVE_KEYWORDS"}}},
+            {"shared_criterion_operation": {"create": {
+                "shared_set": f"customers/{CLIENT}/sharedSets/-1",
+                "keyword": {"text": "fliesen reinigen", "match_type": "PHRASE"}}}},
+            {"campaign_shared_set_operation": {"create": {
+                "campaign": f"customers/{CLIENT}/campaigns/1",
+                "shared_set": f"customers/{CLIENT}/sharedSets/-1"}}},
+        ]
+        res = write.mutate(CLIENT, ops)
+        self.assertTrue(res["gueltig"])
+        self.assertEqual(len(res["zusammenfassung"]), 3)
+
+    def test_shared_criterion_remove(self):
+        ops = [{"shared_criterion_operation": {"remove": f"customers/{CLIENT}/sharedCriteria/1~2"}}]
+        self.assertTrue(write.mutate(CLIENT, ops)["gueltig"])
+
+    def test_update_without_mask_on_campaign(self):
+        ops = [{"campaign_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaigns/1", "name": "Neu"}}}]
+        self.assertTrue(write.mutate(CLIENT, ops)["gueltig"])
+
+
+    def test_enabling_campaign_without_mask_blocked(self):
+        ops = [{"campaign_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaigns/1", "status": "ENABLED"}}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+    def test_budget_update_without_mask_checked(self):
+        ops = [{"campaign_budget_operation": {"update": {
+            "resource_name": f"customers/{CLIENT}/campaignBudgets/1", "amount_micros": "500000000"}}}]
+        with self.assertRaises(ToolError):
+            write.mutate(CLIENT, ops)
+
+
 if __name__ == "__main__":
     unittest.main()

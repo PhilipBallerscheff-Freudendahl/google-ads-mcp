@@ -25,6 +25,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 from google.ads.googleads.errors import GoogleAdsException
+from google.api_core import protobuf_helpers
 from google.protobuf import json_format
 from mcp.types import ToolAnnotations
 
@@ -170,7 +171,13 @@ def _check_operations(customer_id: str, parsed: List[Any]) -> List[str]:
             )
         sub = getattr(op, kind)
         action = sub._pb.WhichOneof("operation")
-        mask = list(sub.update_mask.paths) if "update_mask" in sub else []
+        has_mask = "update_mask" in sub._pb.DESCRIPTOR.fields_by_name
+        mask = list(sub.update_mask.paths) if has_mask and sub._pb.HasField("update_mask") else []
+        if has_mask and action == "update" and not mask:
+            # Derive the mask from the fields that were sent, so every check applies.
+            derived = protobuf_helpers.field_mask(None, sub.update._pb)
+            sub._pb.update_mask.CopyFrom(derived)
+            mask = list(derived.paths)
 
         if kind == "campaign_operation":
             if action == "create":
