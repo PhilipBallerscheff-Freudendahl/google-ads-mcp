@@ -54,6 +54,7 @@ BLOCKED_OPERATIONS = {
     "custom_conversion_goal_operation",
     "customer_conversion_goal_operation",
     "campaign_conversion_goal_operation",
+    "recommendation_subscription_operation",
 }
 
 _TOKEN_TTL_SECONDS = 30 * 60
@@ -151,14 +152,89 @@ def _current_budget_micros(customer_id: str, resource_name: str) -> int | None:
     return None
 
 
-def _check_operations(customer_id: str, parsed: List[Any]) -> List[str]:
+def _camel(path: str) -> str:
+    def seg(x: str) -> str:
+        parts = x.split("_")
+        return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    return ".".join(seg(x) for x in path.strip().split("."))
+
+
+def _normalize(obj: Any) -> Any:
+    """Accepts update masks as snake_case or camelCase, string or list."""
+    if isinstance(obj, list):
+        return [_normalize(x) for x in obj]
+    if not isinstance(obj, dict):
+        return obj
+    out = {}
+    for key, value in obj.items():
+        if key in ("update_mask", "updateMask"):
+            paths = value.split(",") if isinstance(value, str) else (
+                value.get("paths", []) if isinstance(value, dict) else list(value))
+            out[key] = ",".join(_camel(p) for p in paths if str(p).strip())
+        else:
+            out[key] = _normalize(value)
+    return out
+
+
+def _query_one(customer_id: str, query: str):
+    ga = utils.get_googleads_service("GoogleAdsService")
+    for batch in ga.search_stream(customer_id=customer_id, query=query):
+        for row in batch.results:
+            return row
+    return None
+
+
+def _campaign_running(customer_id: str, campaign_rn: str) -> bool:
+    if not campaign_rn or "/-" in campaign_rn:
+        return False  # new campaign from this batch, always created paused
+    row = _query_one(customer_id,
+        f"SELECT campaign.status FROM campaign WHERE campaign.resource_name = '{campaign_rn}'")
+    return row is None or row.campaign.status.name == "ENABLED"
+
+
+def _ad_group_running(customer_id: str, ad_group_rn: str, new_ad_groups: Dict[str, Any]) -> bool:
+    if ad_group_rn in new_ad_groups:
+        ag = new_ad_groups[ad_group_rn]
+        if ag.status.name not in ("ENABLED", "UNSPECIFIED"):
+            return False
+        return _campaign_running(customer_id, ag.campaign)
+    if not ad_group_rn or "/-" in ad_group_rn:
+        return True  # unknown temporary ad group: treat as live to stay safe
+    row = _query_one(customer_id,
+        "SELECT ad_group.status, campaign.status FROM ad_group "
+        f"WHERE ad_group.resource_name = '{ad_group_rn}'")
+    if row is None:
+        return True
+    return row.ad_group.status.name == "ENABLED" and row.campaign.status.name == "ENABLED"
+
+
+def _has_primary_conversion(customer_id: str) -> bool:
+    row = _query_one(customer_id,
+        "SELECT conversion_action.id FROM conversion_action "
+        "WHERE conversion_action.status = 'ENABLED' AND conversion_action.primary_for_goal = TRUE "
+        "LIMIT 1")
+    return row is not None
+
+
+_LIVE_STATUSES = ("ENABLED", "UNSPECIFIED")
+
+
+def _check_operations(customer_id: str, parsed: List[Any]) -> tuple:
     """Applies the safeguards. Mutates create operations where needed and
-    returns notes describing automatic adjustments."""
+    returns (notes, activations)."""
     client = utils.get_googleads_client()
     status_enum = client.enums.CampaignStatusEnum
     notes: List[str] = []
     max_budget = _max_daily_budget_micros()
     max_pct = _max_increase_pct()
+    activations: List[str] = []
+    new_ad_groups = {
+        op.ad_group_operation.create.resource_name: op.ad_group_operation.create
+        for op in parsed
+        if op._pb.WhichOneof("operation") == "ad_group_operation"
+        and op.ad_group_operation._pb.WhichOneof("operation") == "create"
+        and op.ad_group_operation.create.resource_name
+    }
 
     for i, op in enumerate(parsed, start=1):
         kind = op._pb.WhichOneof("operation")
@@ -185,10 +261,23 @@ def _check_operations(customer_id: str, parsed: List[Any]) -> List[str]:
                     sub.create.status = status_enum.PAUSED
                     notes.append(f"Operation {i}: neue Kampagne wird pausiert angelegt.")
             elif action == "update" and "status" in mask and sub.update.status == status_enum.ENABLED:
-                raise ToolError(
-                    f"Operation {i}: Kampagnen schaltet der Agent nicht ein. "
-                    "Das macht ein Mitarbeiter nach der Prüfung in Google Ads."
-                )
+                activations.append(f"Operation {i}: Kampagne {sub.update.resource_name} wird eingeschaltet.")
+
+        if kind in ("ad_group_operation", "ad_group_ad_operation", "ad_group_criterion_operation"):
+            label = {"ad_group_operation": "Anzeigengruppe", "ad_group_ad_operation": "Anzeige",
+                     "ad_group_criterion_operation": "Keyword"}[kind]
+            if action == "update" and "status" in mask and sub.update.status.name == "ENABLED":
+                activations.append(f"Operation {i}: {label} {sub.update.resource_name} wird eingeschaltet.")
+            elif action == "create" and sub.create.status.name in _LIVE_STATUSES:
+                negative = kind == "ad_group_criterion_operation" and sub.create.negative
+                if not negative:
+                    if kind == "ad_group_operation":
+                        live = _campaign_running(customer_id, sub.create.campaign)
+                    else:
+                        live = _ad_group_running(customer_id, sub.create.ad_group, new_ad_groups)
+                    if live:
+                        activations.append(
+                            f"Operation {i}: neue(s) {label} wird in einer laufenden Kampagne aktiv angelegt.")
 
         if kind == "campaign_budget_operation" and action in ("create", "update"):
             budget = sub.create if action == "create" else sub.update
@@ -207,7 +296,20 @@ def _check_operations(customer_id: str, parsed: List[Any]) -> List[str]:
                             f"Operation {i}: Erhöhung von {current / 1e6:.2f} € auf {amount / 1e6:.2f} € "
                             f"ist mehr als {max_pct:.0f} % auf einmal."
                         )
-    return notes
+
+    if activations:
+        if len(activations) < len(parsed):
+            raise ToolError(
+                "Aktivierungen (etwas geht live) werden einzeln bestätigt und nie zusammen mit anderen "
+                "Änderungen ausgeführt. Bitte zuerst die übrigen Änderungen separat ausführen und die "
+                "Aktivierung danach als eigenen Schritt. Betroffen: " + " | ".join(activations)
+            )
+        if not _has_primary_conversion(customer_id):
+            raise ToolError(
+                "Aktivierung abgelehnt: Das Konto hat keine aktive primäre Conversion-Aktion. "
+                "Ohne Conversion-Tracking geht nichts live."
+            )
+    return notes, activations
 
 
 def _summarize(ops: List[Dict[str, Any]]) -> List[str]:
@@ -261,13 +363,21 @@ def mutate(
               "negative": true, "keyword": {"text": "fliesen reinigen", "match_type": "PHRASE"}}}}]
             Use temporary negative IDs (e.g. customers/{id}/campaignBudgets/-1) to create linked
             objects (budget -> campaign -> ad group -> keywords/ads) in one call.
-            Updates need "update_mask", e.g. {"campaign_operation": {"update": {...}, "update_mask": "name"}}.
+            Updates take "update_mask" (snake_case or camelCase, string or list), e.g.
+            {"campaign_operation": {"update": {...}, "update_mask": "name"}}.
         validate_only: true = dry run (default). false = real change, needs confirmation_token.
         confirmation_token: Token from the dry run of exactly these operations (valid 30 minutes).
 
-    Safeguards enforced by the server: only client accounts under the MCC; billing, users,
-    account links and conversion settings are blocked; new campaigns are created paused and
-    campaigns cannot be enabled; daily budgets are capped and budget increases per change are limited.
+    Going live (activation): switching a campaign, ad group, ad or keyword to ENABLED, or creating
+    one as enabled inside a running campaign, is an activation. The dry run marks it
+    ("aktivierung": true). Activations must be sent on their own, never together with other
+    changes, and are refused if the account has no enabled primary conversion action. Before
+    the user's yes, ask whether the tag test and the next-day end-to-end conversion test passed.
+
+    Safeguards enforced by the server: only client accounts under the MCC (never the MCC itself);
+    billing, users and access, account settings, account links, conversion settings and
+    automatically applied recommendations are blocked; new campaigns are always created paused;
+    daily budgets are capped and budget increases per change are limited.
     """
     customer_id = utils.clean_customer_id(customer_id)
     if not operations:
@@ -275,6 +385,7 @@ def mutate(
     user = _current_user()
 
     client = utils.get_googleads_client()
+    operations = _normalize(operations)
     parsed = []
     for i, op in enumerate(operations, start=1):
         msg = client.get_type("MutateOperation")
@@ -285,7 +396,7 @@ def mutate(
         parsed.append(msg)
 
     _ensure_client_account(customer_id)
-    notes = _check_operations(customer_id, parsed)
+    notes, activations = _check_operations(customer_id, parsed)
     effective_ops = [
         json_format.MessageToDict(p._pb, preserving_proto_field_name=True) for p in parsed
     ]
@@ -319,9 +430,16 @@ def mutate(
             "konto": customer_id,
             "zusammenfassung": summary,
             "hinweise": notes,
+            "aktivierung": bool(activations),
+            "aktivierungen": activations,
             "confirmation_token": _make_token(user, customer_id, effective_ops),
-            "naechster_schritt": "Zusammenfassung dem Nutzer zeigen. Erst nach ausdrücklichem Ja mit "
-                                 "validate_only=false, identischen Operationen und diesem Token erneut aufrufen.",
+            "naechster_schritt": (
+                "AKTIVIERUNG: Hier geht etwas live. Vor dem Ja den Nutzer fragen, ob der Tag-Test "
+                "(Conversion wird beim Absenden ausgelöst) und der End-to-End-Test vom Vortag "
+                "(Conversion in Google Ads angekommen) bestanden sind. Aktivierung einzeln bestätigen lassen. "
+                if activations else ""
+            ) + "Zusammenfassung dem Nutzer zeigen. Erst nach ausdrücklichem Ja mit "
+                "validate_only=false, identischen Operationen und diesem Token erneut aufrufen.",
         }
 
     results = [
@@ -329,7 +447,8 @@ def mutate(
     ]
     _audit({
         "zeit": datetime.now(timezone.utc).isoformat(), "nutzer": user, "konto": customer_id,
-        "ergebnis": "ausgefuehrt", "operationen": effective_ops, "antwort": results,
+        "ergebnis": "ausgefuehrt", "aktivierung": bool(activations),
+        "operationen": effective_ops, "antwort": results,
     })
     return {"ausgefuehrt": True, "konto": customer_id, "zusammenfassung": summary, "hinweise": notes, "ergebnis": results}
 
