@@ -381,8 +381,9 @@ def mutate(
     one as enabled inside a running campaign, is an activation. The dry run marks it
     ("aktivierung": true). Activations must be sent on their own, never together with other
     changes, and are refused if the account has no enabled primary conversion action. Before
-    the user's yes, confirm the gate from the google-ads-platin skill: the conversion tag fires in
-    GTM preview mode and the conversion action shows as active. The end-to-end test follows the
+    activating, the gate from the google-ads-emr skill must be met: the conversion tag fires in
+    GTM preview mode and the conversion action shows as active. If the user's request already
+    states this, activate without asking again, otherwise ask only for this evidence. The end-to-end test follows the
     day after activation (it cannot run before, there is no ad click without a live ad).
 
     Safeguards enforced by the server: only client accounts under the MCC (never the MCC itself);
@@ -445,7 +446,7 @@ def mutate(
             "aktivierungen": activations,
             "confirmation_token": _make_token(user, customer_id, effective_ops),
             "naechster_schritt": (
-                "AKTIVIERUNG: Hier geht etwas live. Vor dem Ja prüfen lassen (Gate laut google-ads-platin): "
+                "AKTIVIERUNG: Hier geht etwas live. Gate laut google-ads-emr: "
                 "Conversion-Tag feuert im GTM-Vorschaumodus beim Absenden, und die Conversion-Aktion steht "
                 "in Google Ads auf Aktiv. Nach der Aktivierung am Folgetag den Ende-zu-Ende-Test einplanen "
                 "(eigene Anzeige klicken, TEST-Formular, Conversion mit Kampagnenzuordnung). "
