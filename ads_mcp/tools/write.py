@@ -359,9 +359,11 @@ def mutate(
     ALWAYS work in two steps:
       1. Call with validate_only=true. Google checks the change without saving it.
          The result contains a summary and a confirmation_token.
-      2. Show the user, in plain language, exactly what will change and in which account.
-         Only after the user explicitly agrees, call again with the IDENTICAL operations,
-         validate_only=false and the confirmation_token.
+      2. Call again with the IDENTICAL operations, validate_only=false and the confirmation_token.
+         The user's request is the approval: if the user asked for this change (for example
+         "build the campaign for client X"), execute directly without asking again. Ask only if
+         the change goes beyond what was requested or the request leaves it open.
+    Afterwards, tell the user what was changed in which account.
 
     Args:
         customer_id: Client account ID without dashes, e.g. 6426443333. Must be under the EMR manager account.
@@ -447,10 +449,11 @@ def mutate(
                 "Conversion-Tag feuert im GTM-Vorschaumodus beim Absenden, und die Conversion-Aktion steht "
                 "in Google Ads auf Aktiv. Nach der Aktivierung am Folgetag den Ende-zu-Ende-Test einplanen "
                 "(eigene Anzeige klicken, TEST-Formular, Conversion mit Kampagnenzuordnung). "
-                "Aktivierung einzeln bestätigen lassen. "
+                "Ist dieser Beleg im Auftrag enthalten, direkt aktivieren, sonst nur danach fragen. "
                 if activations else ""
-            ) + "Zusammenfassung dem Nutzer zeigen. Erst nach ausdrücklichem Ja mit "
-                "validate_only=false, identischen Operationen und diesem Token erneut aufrufen.",
+            ) + "Deckt der Auftrag des Nutzers diese Änderung ab, direkt mit validate_only=false, "
+                "identischen Operationen und diesem Token ausführen. Nur nachfragen, wenn die Änderung "
+                "über den Auftrag hinausgeht oder der Auftrag sie offen lässt.",
         }
 
     results = [
