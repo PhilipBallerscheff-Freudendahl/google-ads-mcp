@@ -1,7 +1,7 @@
 # EMR extension: case inbox for difficult Google Ads cases.
 #
 # Claude reports cases the skill does not cover. Arman decides them, his rule
-# is added to the google-ads-emr skill, and the case is then deleted. The
+# is added to the google-ads-platin-emr skill, and the case is then deleted. The
 # database only holds open work, the knowledge lives in the skill.
 
 import os
@@ -56,7 +56,7 @@ def fall_melden(
 ) -> Dict[str, Any]:
     """Reports a difficult Google Ads case to Arman's inbox.
 
-    Use when the google-ads-emr skill does not cover a decision, several solutions
+    Use when the google-ads-platin-emr skill does not cover a decision, several solutions
     are plausible, a check fails and the skill has no answer, or the user asks for
     expert help. Describe the case without personal data of end customers.
 
@@ -121,7 +121,7 @@ def fall_entscheiden(fall_id: str, entscheidung: str, begruendung: str) -> Dict[
 
 
 def fall_abschliessen(fall_id: str) -> Dict[str, Any]:
-    """Deletes a decided case once its rule is in the google-ads-emr skill (only for the decision makers).
+    """Deletes a decided case once its rule is in the google-ads-platin-emr skill (only for the decision makers).
 
     Args:
         fall_id: ID of a case with status "entschieden".
