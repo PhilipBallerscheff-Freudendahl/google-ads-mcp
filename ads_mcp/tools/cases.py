@@ -97,7 +97,7 @@ def faelle_anzeigen(status: str = "offen", limit: int = 50) -> List[Dict[str, An
 def fall_entscheiden(fall_id: str, entscheidung: str, begruendung: str) -> Dict[str, Any]:
     """Records Arman's decision on a case (only for the decision makers).
 
-    After deciding, draft the generalised rule as an addition to the google-ads-emr
+    After deciding, draft the generalised rule as an addition to the google-ads-platin-emr
     skill (without client details, with status [B]/[N]/[C] and the target reference file).
 
     Args:
