@@ -104,7 +104,7 @@ class WriteToolTest(unittest.TestCase):
     def test_enabling_campaign_alone_is_marked_activation(self):
         res = write.mutate(CLIENT, [self._enable_campaign()])
         self.assertTrue(res["aktivierung"])
-        self.assertIn("Tag-Test", res["naechster_schritt"])
+        self.assertIn("GTM-Vorschaumodus", res["naechster_schritt"])
 
     def test_activation_mixed_with_other_changes_refused(self):
         with self.assertRaises(ToolError):

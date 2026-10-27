@@ -8,3 +8,4 @@ namespaces:
   search: true
   metadata: true
   write: true
+  faelle: true

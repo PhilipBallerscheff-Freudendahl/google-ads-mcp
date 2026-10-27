@@ -379,7 +379,9 @@ def mutate(
     one as enabled inside a running campaign, is an activation. The dry run marks it
     ("aktivierung": true). Activations must be sent on their own, never together with other
     changes, and are refused if the account has no enabled primary conversion action. Before
-    the user's yes, ask whether the tag test and the next-day end-to-end conversion test passed.
+    the user's yes, confirm the gate from the google-ads-platin skill: the conversion tag fires in
+    GTM preview mode and the conversion action shows as active. The end-to-end test follows the
+    day after activation (it cannot run before, there is no ad click without a live ad).
 
     Safeguards enforced by the server: only client accounts under the MCC (never the MCC itself);
     billing, users and access, account settings, account links, conversion settings and
@@ -441,9 +443,11 @@ def mutate(
             "aktivierungen": activations,
             "confirmation_token": _make_token(user, customer_id, effective_ops),
             "naechster_schritt": (
-                "AKTIVIERUNG: Hier geht etwas live. Vor dem Ja den Nutzer fragen, ob der Tag-Test "
-                "(Conversion wird beim Absenden ausgelöst) und der End-to-End-Test vom Vortag "
-                "(Conversion in Google Ads angekommen) bestanden sind. Aktivierung einzeln bestätigen lassen. "
+                "AKTIVIERUNG: Hier geht etwas live. Vor dem Ja prüfen lassen (Gate laut google-ads-platin): "
+                "Conversion-Tag feuert im GTM-Vorschaumodus beim Absenden, und die Conversion-Aktion steht "
+                "in Google Ads auf Aktiv. Nach der Aktivierung am Folgetag den Ende-zu-Ende-Test einplanen "
+                "(eigene Anzeige klicken, TEST-Formular, Conversion mit Kampagnenzuordnung). "
+                "Aktivierung einzeln bestätigen lassen. "
                 if activations else ""
             ) + "Zusammenfassung dem Nutzer zeigen. Erst nach ausdrücklichem Ja mit "
                 "validate_only=false, identischen Operationen und diesem Token erneut aufrufen.",
