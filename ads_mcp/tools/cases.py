@@ -1,8 +1,8 @@
 # EMR extension: case inbox for difficult Google Ads cases.
 #
 # Claude reports cases the skill does not cover. Arman decides them, his rule
-# is added to the google-ads-platin-emr skill, and the case is then deleted. The
-# database only holds open work, the knowledge lives in the skill.
+# is added to the google-ads-platin-emr skill, and the case is then closed. Closed
+# cases stay in the database as a record of what was decided and why.
 
 import os
 from datetime import datetime, timezone
@@ -85,7 +85,8 @@ def faelle_anzeigen(status: str = "offen", limit: int = 50) -> List[Dict[str, An
     """Lists reported cases, oldest first.
 
     Args:
-        status: "offen" (default), "entschieden" (decided, rule not yet in the skill) or "alle".
+        status: "offen" (default), "entschieden" (decided, rule not yet in the skill),
+            "abgeschlossen" (rule is in the skill) or "alle".
         limit: Maximum number of cases.
     """
     col = _collection()
@@ -121,7 +122,9 @@ def fall_entscheiden(fall_id: str, entscheidung: str, begruendung: str) -> Dict[
 
 
 def fall_abschliessen(fall_id: str) -> Dict[str, Any]:
-    """Deletes a decided case once its rule is in the google-ads-platin-emr skill (only for the decision makers).
+    """Closes a decided case once its rule is in the google-ads-platin-emr skill (only for the decision makers).
+
+    The case is kept with status "abgeschlossen" as a record of the decision.
 
     Args:
         fall_id: ID of a case with status "entschieden".
@@ -134,12 +137,16 @@ def fall_abschliessen(fall_id: str) -> Dict[str, Any]:
         raise ToolError(f"Fall {fall_id} gibt es nicht.")
     if snap.to_dict().get("status") != "entschieden":
         raise ToolError("Nur entschiedene Fälle können abgeschlossen werden. Erst fall_entscheiden.")
-    ref.delete()
+    ref.update({
+        "status": "abgeschlossen",
+        "abgeschlossen_von": user,
+        "abgeschlossen_am": _now(),
+    })
     utils.logger.info(f"ads_mcp.faelle abgeschlossen {fall_id} von {user}")
-    return {"fall_id": fall_id, "geloescht": True}
+    return {"fall_id": fall_id, "status": "abgeschlossen"}
 
 
 faelle_mcp.add_tool(Tool.from_function(fall_melden, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False)))
 faelle_mcp.add_tool(Tool.from_function(faelle_anzeigen, annotations=ToolAnnotations(readOnlyHint=True)))
 faelle_mcp.add_tool(Tool.from_function(fall_entscheiden, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False)))
-faelle_mcp.add_tool(Tool.from_function(fall_abschliessen, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True)))
+faelle_mcp.add_tool(Tool.from_function(fall_abschliessen, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False)))

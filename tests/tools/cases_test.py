@@ -76,7 +76,7 @@ class CasesTest(unittest.TestCase):
             with self.assertRaises(ToolError):
                 cases.fall_entscheiden(fid, "E", "B")
 
-    def test_decide_then_close_deletes(self):
+    def test_decide_then_close_keeps_record(self):
         fid = self._melden()["fall_id"]
         with mock.patch.object(cases, "_current_user", return_value="a.e@emr-unternehmensberatung.de"):
             with self.assertRaises(ToolError):
@@ -84,7 +84,11 @@ class CasesTest(unittest.TestCase):
             cases.fall_entscheiden(fid, "Ausschließen", "DIY-Suchen")
             self.assertEqual(cases.faelle_anzeigen("entschieden")[0]["entscheidung"], "Ausschließen")
             cases.fall_abschliessen(fid)
-        self.assertEqual(cases.faelle_anzeigen("alle"), [])
+        self.assertEqual(cases.faelle_anzeigen("offen"), [])
+        self.assertEqual(cases.faelle_anzeigen("entschieden"), [])
+        kept = cases.faelle_anzeigen("abgeschlossen")[0]
+        self.assertEqual(kept["entscheidung"], "Ausschließen")
+        self.assertEqual(kept["abgeschlossen_von"], "a.e@emr-unternehmensberatung.de")
 
 
 if __name__ == "__main__":
